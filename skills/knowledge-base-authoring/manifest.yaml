@@ -1,0 +1,20 @@
+name: knowledge_base_authoring
+version: 0.1.0
+description: 生成、审查和维护客服项目的静态知识库 Markdown 卡片，用于产品参数、政策、价保、售后、物流、发票、兼容性和 FAQ 内容补充。
+domain: knowledge_authoring
+priority: 20
+capabilities:
+  - knowledge_card_generation
+  - product_spec_authoring
+  - policy_card_authoring
+  - retrieval_metadata_design
+  - knowledge_card_validation
+intents:
+  - create_knowledge_card
+  - update_knowledge_card
+  - enrich_product_knowledge
+  - enrich_policy_knowledge
+  - review_knowledge_retrievability
+required_mcp_tools: []
+optional_mcp_tools:
+  - knowledge.search

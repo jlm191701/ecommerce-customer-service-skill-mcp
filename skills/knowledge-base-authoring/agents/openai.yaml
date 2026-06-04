@@ -1,0 +1,4 @@
+interface:
+  display_name: "Knowledge Base Authoring"
+  short_description: "Create structured ecommerce knowledge cards"
+  default_prompt: "Use $knowledge-base-authoring to draft product and policy knowledge cards."

@@ -1,0 +1,2 @@
+"""Local knowledge search adapters."""
+

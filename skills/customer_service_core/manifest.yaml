@@ -1,0 +1,60 @@
+name: customer_service_core
+version: 0.2.0
+description: 完整智能客服 skill，覆盖角色认知、意图澄清、售前、订单总览、物流、支付、售后、知识库、投诉、工单、MCP 使用和回退规则。
+domain: customer_service
+priority: 100
+capabilities:
+  - customer_service_persona
+  - general_customer_conversation
+  - intent_clarification
+  - tool_need_detection
+  - mcp_result_explanation
+  - fallback_handling
+  - handoff_decision
+  - vision_image_understanding
+  - pre_sales_guidance
+  - order_overview_lookup
+  - shipment_status_lookup
+  - payment_status_lookup
+  - after_sales_status_lookup
+  - after_sales_guidance
+  - refund_return_guidance
+  - knowledge_faq_answering
+  - complaint_handling
+  - ticket_preparation
+  - identity_gap_handling
+intents:
+  - greeting
+  - general_question
+  - product_question
+  - knowledge_policy
+  - order_overview
+  - shipment_status
+  - payment_status
+  - after_sales_status
+  - after_sales_policy
+  - image_question
+  - complaint_or_escalation
+  - identity_or_order_clarification
+  - handoff_request
+  - out_of_scope
+required_mcp_tools: []
+optional_mcp_tools:
+  - knowledge.search
+  - vision.analyze
+  - user.lookup
+  - order.lookup
+  - shipment.lookup
+  - payment.lookup
+  - after_sales.lookup
+  - ticket.create
+  - handoff.request
+handoff_policy:
+  allowed: true
+  reasons:
+    - repeated_tool_failure
+    - user_requests_human
+    - high_risk_business_action
+    - strong_dissatisfaction
+    - policy_exception
+    - identity_or_permission_conflict
