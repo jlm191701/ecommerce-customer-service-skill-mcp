@@ -1,157 +1,144 @@
 # 电商智能客服—Skill MCP
 
-这是一个面向电商售前、售后、订单、物流、支付、工单和人工转接场景的智能客服项目。它不是把 FAQ、向量库和大模型简单拼在一起的普通客服 Demo，而是把基础 Agent Runtime、可插拔 Skill、MCP 工具能力和电商知识检索拆成清晰边界，方便扩展、替换、维护和接入真实业务系统。
+面向电商客服场景的可插拔 Agent 工程样例。项目把客服策略、对话编排、业务工具和知识检索拆分为相对独立的层次：基础 Agent Runtime 负责会话与执行，Skill 负责客服策略，MCP 负责业务能力边界，本地知识检索负责商品与政策类静态知识。
 
-## 项目亮点
+这个仓库适合用于研究或二次开发以下问题：
 
-- **Skill 承载客服策略**：客服身份、话术边界、意图判断、追问策略、售后流程、转人工规则等都沉淀在 `skills/customer_service_core`，不会散落在后端业务代码里。
-- **MCP 承载业务能力**：订单查询、物流查询、支付查询、售后查询、工单创建、人工转接、知识搜索都通过 MCP Gateway/Tool 暴露，便于从 mock 切换到 MySQL、远程 MCP Server 或真实企业系统。
-- **基础 Agent Runtime 保持轻量**：Runtime 只负责会话状态、技能选择、Action 执行、LLM 调用、MCP 调用和 trace，不把客服业务规则写死在框架里。
-- **知识搜索不依赖传统向量检索**：针对电商知识的稳定结构，项目使用本地 Markdown 知识卡片、L0/L1/L2 层级索引、QueryPlan、多路召回、倒排索引和规则 rerank，结果可解释、低成本、易维护。
-- **高插拔、可解耦**：LLM、MCP 后端、知识库、会话存储、长期记忆、数据库网关都通过协议或适配器组织，后续替换供应商或接入真实系统时改动范围更小。
-- **更适合电商客服的安全边界**：订单归属校验、敏感字段脱敏、MCP 审计日志、人工升级策略和工具权限边界都在架构中显式体现。
-- **知识库维护友好**：产品参数、价保、退换货、物流、发票、兼容性、促销等知识以 Markdown 卡片组织，配合 `knowledge-base-authoring` skill 更容易持续更新。
+- 电商客服 Agent 如何组织售前、售后、订单、物流、支付、工单、转人工等多类能力。
+- 如何把客服流程沉淀成可维护的 Skill 包，而不是散落在后端代码或单段提示词中。
+- 如何用 MCP 把订单、物流、支付、售后、工单等业务系统从 Agent 中解耦出来。
+- 如何在不依赖向量数据库的情况下，为电商知识库实现可解释、可维护的检索流程。
 
-## 与普通电商客服的不同
+## 设计目标
 
-普通客服机器人常见做法是“用户问题 -> 向量检索 FAQ -> LLM 总结回复”，短期能跑，但容易遇到几个问题：知识命中不可解释、业务动作难审计、售后流程散乱、工具接入强耦合、后续维护成本高。
+本项目并不追求“一个大模型直接回答所有问题”。它更关注工程边界：
 
-这个项目采用分层组合：
+| 层次 | 主要职责 | 不负责 |
+| --- | --- | --- |
+| Agent Runtime | 会话状态、Skill 选择、Action 执行、LLM 调用、MCP 调用、trace | 具体客服业务规则 |
+| Skill | 意图判断、客服流程、追问策略、工具使用策略、回复组织、转人工判断 | 直接访问数据库或外部系统 |
+| MCP Tool | 订单、物流、支付、售后、工单、人工转接、知识搜索等业务能力 | 决定客服话术 |
+| Knowledge Search | 商品、政策、促销、兼容性、物流、售后等静态知识召回 | 用户订单等私有数据查询 |
 
-```text
-用户消息
-  -> Agent Runtime
-  -> customer_service_core Skill
-  -> MCP Capability / Tool
-  -> 订单、物流、支付、售后、工单、知识库等业务能力
-  -> Skill 整理为客服回复
-```
+这种拆分的价值在于：客服规则可以独立维护，业务系统可以替换，模型供应商可以切换，知识检索策略也可以单独演进。
 
-也就是说：
+## Skill 设计
 
-- Skill 决定“客服应该怎么思考和表达”。
-- MCP 决定“业务能力如何被安全调用”。
-- Agent Runtime 决定“对话一轮怎么编排和落盘”。
-- Knowledge Search 决定“电商知识如何被稳定、可解释地召回”。
-
-这种结构让客服策略、工具能力、模型供应商和数据源彼此独立，项目从 Demo 走向真实业务接入时不需要整体推倒重来。
-
-## Skill 是什么
-
-在这个项目里，Skill 不是一个简单提示词，也不是某个固定函数，而是一套可移植的领域能力包。它把“客服应该如何理解问题、按什么流程追问、什么时候查订单、什么时候查知识库、什么时候创建工单、什么时候转人工、最终用什么语气回复用户”集中管理起来。
+项目中的 Skill 不是单个 prompt，也不是一个固定函数，而是领域策略包。它描述客服在某个业务域内如何工作：如何识别意图、如何追问缺失信息、什么时候调用 MCP、如何解释工具结果、哪些场景必须转人工、回复时应遵守什么口径。
 
 当前核心 Skill 位于：
 
 ```text
 skills/customer_service_core/
-├── manifest.yaml                 # Skill 的名称、描述、意图、能力和优先级
-├── SKILL.md                      # Skill 主说明，定义客服工作方式
-├── agents/openai.yaml            # 面向模型/Agent 的运行配置
-└── references/                   # 可维护的客服策略资料
-    ├── persona.md                # 客服人设与服务风格
+├── manifest.yaml                 # Skill 元数据、能力声明、意图和优先级
+├── SKILL.md                      # 主策略说明
+├── agents/openai.yaml            # 面向模型运行的配置
+└── references/
+    ├── persona.md                # 客服角色与表达风格
     ├── intent_taxonomy.md        # 电商客服意图分类
     ├── conversation_policy.md    # 多轮对话策略
-    ├── knowledge_playbook.md     # 知识库查询策略
-    ├── mcp_policy.md             # MCP 工具使用策略
-    ├── order_playbook.md         # 订单相关处理流程
-    ├── after_sales_playbook.md   # 售后处理流程
+    ├── knowledge_playbook.md     # 知识查询策略
+    ├── mcp_policy.md             # MCP 工具调用边界
+    ├── order_playbook.md         # 订单相关流程
+    ├── after_sales_playbook.md   # 售后流程
     ├── complaint_playbook.md     # 投诉处理流程
     ├── handoff_policy.md         # 人工转接规则
-    └── response_templates.md     # 回复模板
+    ├── response_templates.md     # 回复模板
+    └── evaluation_cases.md       # 评估用例
 ```
 
-这种设计的好处是：
+这样组织 Skill 有几个实际收益：
 
-- **业务策略集中**：客服规则不用散落在后端代码、前端代码和模型提示词里。
-- **修改成本低**：活动规则、售后流程、转人工标准变化时，优先改 Skill 资料，而不是重写 Agent 框架。
-- **可插拔**：未来可以新增“售前导购 Skill”“售后专家 Skill”“投诉处理 Skill”“知识库编写 Skill”，由 Runtime 统一加载和选择。
-- **可评估**：Skill 内可以维护 `evaluation_cases.md`，用典型电商客服问题检查回答质量和工具调用是否合理。
-- **不绑定模型**：Skill 描述客服智能，LLM 只是执行智能的一种方式；更换 DeepSeek、OpenAI 或其他模型时，不需要重写客服流程。
-- **不直接碰数据库**：Skill 只提出需要的能力，真实订单、物流、支付、工单操作交给 MCP，权限和审计边界更清楚。
+- 业务口径集中维护。活动规则、售后策略、转人工标准发生变化时，优先修改 Skill 资料，而不是改 Agent 框架。
+- Skill 与模型解耦。DeepSeek、OpenAI 或其他模型可以共用同一套客服策略。
+- Skill 与数据源解耦。Skill 只描述“需要什么能力”，真实数据访问交给 MCP。
+- 易于扩展。后续可以拆出售前导购、售后专家、投诉处理、知识库编写等独立 Skill。
+- 易于评估。典型客服问题可以沉淀到 `evaluation_cases.md`，用于检查工具调用、权限边界和回复质量。
 
-简单说，Skill 负责“客服大脑”，MCP 负责“业务工具”，Agent Runtime 负责“对话调度”。三者拆开后，项目更适合长期维护，也更容易从演示系统升级成真实业务系统。
+## MCP 能力边界
 
-## 系统结构
+MCP 是业务能力边界，也是权限与审计边界。当前工具包括：
 
-```text
-.
-├── backend/                      # FastAPI 后端、Agent Runtime、MCP 网关、知识检索、测试
-│   ├── app/
-│   │   ├── agent/                # Runtime、Action、Executor、Skill Registry、Tool Registry
-│   │   ├── api/                  # 登录、注册、聊天 API
-│   │   ├── core/                 # 环境配置
-│   │   ├── infrastructure/       # LLM、MCP、Knowledge、Memory、Session、Skill Loader
-│   │   └── schemas/              # Pydantic 模型
-│   ├── db/                       # MySQL schema 和 seed
-│   ├── knowledge/                # 电商知识 Markdown 卡片
-│   └── tests/                    # 后端测试
-├── frontend/                     # React Web 客服界面
-├── mcp_server/                   # 独立 HTTP MCP-compatible Server
-├── skills/                       # 可插拔 Skill 包
-│   ├── customer_service_core/    # 核心客服策略 Skill
-│   └── knowledge-base-authoring/ # 知识卡片维护 Skill
-├── docs/                         # 架构、MCP、知识检索、实现说明
-├── PROJECT_STRUCTURE.md          # 工程结构说明
-└── README.md
-```
-
-## 核心流程
-
-```mermaid
-flowchart TD
-  A["Web Chat"] --> B["POST /api/chat/messages"]
-  B --> C["AgentRuntime.run_turn"]
-  C --> D["读取短期会话状态"]
-  D --> E["召回用户长期记忆"]
-  E --> F["选择 customer_service_core Skill"]
-  F --> G["Skill 产生 Action"]
-  G --> H{"Action 类型"}
-  H -->|LLMAction| I["DeepSeek / Echo LLM"]
-  H -->|MCPToolAction| J["MCP Gateway"]
-  H -->|FinalAnswerAction| K["最终客服回复"]
-  J --> L{"MCP Backend"}
-  L -->|mock| M["MockMCPGateway"]
-  L -->|mysql| N["MySQLMCPGateway"]
-  L -->|remote| O["Remote MCP Server"]
-  N --> P["订单/物流/支付/售后/工单数据"]
-  O --> P
-  M --> Q["LocalKnowledgeSearch"]
-  N --> Q
-  O --> Q
-  K --> R["保存会话状态与 trace"]
-  R --> S["返回前端"]
-```
-
-## MCP 工具能力
-
-当前客服 MCP 工具包括：
-
-| 工具 | 作用 |
+| 工具 | 用途 |
 | --- | --- |
 | `knowledge.search` | 查询商品、政策、售后、物流、促销、兼容性等静态知识 |
-| `user.lookup` | 查询当前用户服务上下文，只返回安全、脱敏的信息 |
-| `order.lookup` | 查询订单总览和商品明细，并校验用户归属 |
+| `user.lookup` | 查询当前用户服务上下文，返回脱敏后的身份、会员和最近订单提示 |
+| `order.lookup` | 查询订单总览和商品明细，并校验订单归属 |
 | `shipment.lookup` | 查询物流状态、承运商、运单号和预计送达时间 |
 | `payment.lookup` | 查询支付状态、支付方式和脱敏交易信息 |
 | `after_sales.lookup` | 查询售后记录和处理状态 |
 | `ticket.create` | 创建客服工单 |
 | `handoff.request` | 请求人工客服转接 |
 
-## 知识检索设计
+后端支持三类 MCP 后端：
 
-项目没有把知识检索直接做成传统向量库 RAG，而是针对电商知识的特点实现了可解释的本地检索：
+- `mock`：无数据库演示模式。
+- `mysql`：通过 MySQL 网关访问本地业务表。
+- `remote`：通过 HTTP 调用独立 MCP Server。
 
-1. 使用 Markdown 知识卡片保存商品、政策、物流、售后、发票、兼容性、促销等内容。
+## 知识检索
+
+电商知识通常具有明确的业务分类和稳定结构，例如商品参数、价保规则、退换货政策、发票规则、物流限制、兼容性说明。项目没有把这部分直接做成传统向量库 RAG，而是实现了一个本地、可解释的检索流程：
+
+1. 使用 Markdown 知识卡片保存商品、政策、售后、物流、促销、兼容性等内容。
 2. 构建 L0/L1/L2 层级索引：先定位类别和卡片，再进入正文证据片段。
-3. 用规则型 QueryPlan 把用户问题拆成多路查询，例如商品参数、售后政策、兼容性、价保规则。
-4. 用倒排索引召回候选，并通过标题、关键词、正文、分类、精确短语、证据片段和热度做轻量 rerank。
-5. 返回命中原因、证据片段和关联知识，方便 Skill 生成有依据的客服回复。
+3. 通过规则型 QueryPlan 将用户问题拆成多路查询。
+4. 使用倒排索引召回候选，并基于标题、关键词、正文、分类、精确短语、证据片段和热度做轻量 rerank。
+5. 返回命中原因、证据片段和关联知识，供 Skill 组织客服回复。
 
-这样做的好处是成本低、冷启动快、可解释性强，也更适合维护电商场景里大量稳定但经常更新的规则型知识。
+这个方案的优势是冷启动成本低、检索过程可解释、知识维护方式接近业务文档。它也保留了后续接入 Elasticsearch、向量库或外部 reranker 的空间。
+
+## 运行流程
+
+```mermaid
+flowchart TD
+  A["Web Chat"] --> B["POST /api/chat/messages"]
+  B --> C["AgentRuntime.run_turn"]
+  C --> D["读取 ConversationState"]
+  D --> E["召回长期记忆"]
+  E --> F["选择 customer_service_core Skill"]
+  F --> G["Skill 产生 Action"]
+  G --> H{"Action 类型"}
+  H -->|LLMAction| I["LLM Adapter"]
+  H -->|MCPToolAction| J["MCP Gateway"]
+  H -->|FinalAnswerAction| K["最终回复"]
+  J --> L{"MCP Backend"}
+  L -->|mock| M["Mock Gateway"]
+  L -->|mysql| N["MySQL Gateway"]
+  L -->|remote| O["Remote MCP Server"]
+  N --> P["业务表"]
+  O --> P
+  M --> Q["LocalKnowledgeSearch"]
+  N --> Q
+  O --> Q
+  K --> R["保存状态与 trace"]
+  R --> S["返回前端"]
+```
+
+## 目录结构
+
+```text
+.
+├── backend/
+│   ├── app/
+│   │   ├── agent/                # Runtime、Action、Executor、Skill Registry、Tool Registry
+│   │   ├── api/                  # 登录、注册、聊天 API
+│   │   ├── core/                 # 配置读取
+│   │   ├── infrastructure/       # LLM、MCP、Knowledge、Memory、Session、Skill Loader
+│   │   └── schemas/              # API 数据模型
+│   ├── db/                       # MySQL schema 和 seed
+│   ├── knowledge/                # Markdown 知识库
+│   └── tests/                    # 后端测试
+├── frontend/                     # React 客服界面
+├── mcp_server/                   # 独立 HTTP MCP-compatible Server
+├── skills/                       # Skill 包
+├── docs/                         # 架构与实现文档
+└── PROJECT_STRUCTURE.md
+```
 
 ## 本地运行
 
-### 1. 后端
+### 后端
 
 ```bash
 cd backend
@@ -162,12 +149,12 @@ copy .env.example .env
 uvicorn app.main:app --reload --port 8001
 ```
 
-后端接口：
+接口：
 
 - `GET /health`
 - `POST /api/chat/messages`
 
-### 2. 前端
+### 前端
 
 ```bash
 cd frontend
@@ -175,11 +162,9 @@ npm install
 npm run dev
 ```
 
-前端默认请求 `http://localhost:8001`，可通过 `VITE_API_BASE_URL` 覆盖。
+前端默认请求 `http://localhost:8001`。如需调整，可设置 `VITE_API_BASE_URL`。
 
-### 3. 独立 MCP Server
-
-如果希望让 Agent 后端通过远程 MCP Server 调工具，可以先启动：
+### 独立 MCP Server
 
 ```bash
 cd mcp_server
@@ -199,26 +184,51 @@ CS_AGENT_MCP_SERVER_URL=http://localhost:9001
 
 ## 配置说明
 
-请不要把真实 `.env` 提交到仓库。项目只保留 `.env.example`，真实配置应在本地创建：
+真实 `.env` 不应提交到仓库。仓库只保留 `.env.example`，用于说明需要哪些配置项。
+
+后端示例：
 
 ```env
+# LLM provider. deepseek_key is kept for compatibility with the current config alias.
 deepseek_key=replace-with-your-deepseek-key
 CS_AGENT_DEEPSEEK_MODEL=deepseek-v4-flash
 CS_AGENT_DEEPSEEK_BASE_URL=https://api.deepseek.com
 
+# Vision model for image-assisted customer service.
 CS_AGENT_QWEN_VL_API_KEY=replace-with-your-qwen-vl-key
 CS_AGENT_QWEN_VL_MODEL=qwen3-vl-flash
 CS_AGENT_QWEN_VL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 
+# MCP backend: mock, mysql, or remote.
 CS_AGENT_MCP_BACKEND=mock
 CS_AGENT_MCP_SERVER_URL=http://localhost:9001
 CS_AGENT_MCP_TIMEOUT_SECONDS=30
 
+# MySQL is required when CS_AGENT_MCP_BACKEND=mysql.
 CS_AGENT_MYSQL_HOST=localhost
 CS_AGENT_MYSQL_PORT=3306
 CS_AGENT_MYSQL_USER=replace-with-your-mysql-user
 CS_AGENT_MYSQL_PASSWORD=replace-with-your-mysql-password
 CS_AGENT_MYSQL_DATABASE=customer_service_agent
+```
+
+独立 MCP Server 示例：
+
+```env
+# MySQL connection used by the standalone MCP server.
+CS_MCP_MYSQL_HOST=localhost
+CS_MCP_MYSQL_PORT=3306
+CS_MCP_MYSQL_USER=replace-with-your-mysql-user
+CS_MCP_MYSQL_PASSWORD=replace-with-your-mysql-password
+CS_MCP_MYSQL_DATABASE=customer_service_agent
+
+# Knowledge base path. Keep the default when running from the project root.
+CS_MCP_KNOWLEDGE_PATH=backend/knowledge
+
+# Vision model used by visual customer-service tools.
+CS_MCP_QWEN_VL_API_KEY=replace-with-your-qwen-vl-key
+CS_MCP_QWEN_VL_MODEL=qwen3-vl-flash
+CS_MCP_QWEN_VL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 ```
 
 ## 测试
@@ -237,10 +247,10 @@ cd frontend
 npm run build
 ```
 
-## 进一步阅读
+## 文档
 
 - `PROJECT_STRUCTURE.md`：工程结构和模块职责。
-- `docs/agent-architecture.md`：高解耦智能客服 Agent 架构规范。
-- `docs/mcp-capability-design.md`：MCP 能力与工具设计。
+- `docs/agent-architecture.md`：Agent Runtime、Skill 与 MCP 的边界。
+- `docs/mcp-capability-design.md`：MCP 能力设计与工具契约。
 - `docs/knowledge-search-retrieval-design.md`：知识检索流程与技术原理。
-- `docs/technical-implementation-overview.md`：当前实现细节总览。
+- `docs/technical-implementation-overview.md`：当前实现状态与主要接口。
