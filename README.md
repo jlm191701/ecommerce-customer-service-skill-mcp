@@ -1,4 +1,4 @@
-# Skill + MCP 智能电商客服
+# 电商智能客服—Skill MCP
 
 这是一个面向电商售前、售后、订单、物流、支付、工单和人工转接场景的智能客服项目。它不是把 FAQ、向量库和大模型简单拼在一起的普通客服 Demo，而是把基础 Agent Runtime、可插拔 Skill、MCP 工具能力和电商知识检索拆成清晰边界，方便扩展、替换、维护和接入真实业务系统。
 
@@ -35,6 +35,41 @@
 - Knowledge Search 决定“电商知识如何被稳定、可解释地召回”。
 
 这种结构让客服策略、工具能力、模型供应商和数据源彼此独立，项目从 Demo 走向真实业务接入时不需要整体推倒重来。
+
+## Skill 是什么
+
+在这个项目里，Skill 不是一个简单提示词，也不是某个固定函数，而是一套可移植的领域能力包。它把“客服应该如何理解问题、按什么流程追问、什么时候查订单、什么时候查知识库、什么时候创建工单、什么时候转人工、最终用什么语气回复用户”集中管理起来。
+
+当前核心 Skill 位于：
+
+```text
+skills/customer_service_core/
+├── manifest.yaml                 # Skill 的名称、描述、意图、能力和优先级
+├── SKILL.md                      # Skill 主说明，定义客服工作方式
+├── agents/openai.yaml            # 面向模型/Agent 的运行配置
+└── references/                   # 可维护的客服策略资料
+    ├── persona.md                # 客服人设与服务风格
+    ├── intent_taxonomy.md        # 电商客服意图分类
+    ├── conversation_policy.md    # 多轮对话策略
+    ├── knowledge_playbook.md     # 知识库查询策略
+    ├── mcp_policy.md             # MCP 工具使用策略
+    ├── order_playbook.md         # 订单相关处理流程
+    ├── after_sales_playbook.md   # 售后处理流程
+    ├── complaint_playbook.md     # 投诉处理流程
+    ├── handoff_policy.md         # 人工转接规则
+    └── response_templates.md     # 回复模板
+```
+
+这种设计的好处是：
+
+- **业务策略集中**：客服规则不用散落在后端代码、前端代码和模型提示词里。
+- **修改成本低**：活动规则、售后流程、转人工标准变化时，优先改 Skill 资料，而不是重写 Agent 框架。
+- **可插拔**：未来可以新增“售前导购 Skill”“售后专家 Skill”“投诉处理 Skill”“知识库编写 Skill”，由 Runtime 统一加载和选择。
+- **可评估**：Skill 内可以维护 `evaluation_cases.md`，用典型电商客服问题检查回答质量和工具调用是否合理。
+- **不绑定模型**：Skill 描述客服智能，LLM 只是执行智能的一种方式；更换 DeepSeek、OpenAI 或其他模型时，不需要重写客服流程。
+- **不直接碰数据库**：Skill 只提出需要的能力，真实订单、物流、支付、工单操作交给 MCP，权限和审计边界更清楚。
+
+简单说，Skill 负责“客服大脑”，MCP 负责“业务工具”，Agent Runtime 负责“对话调度”。三者拆开后，项目更适合长期维护，也更容易从演示系统升级成真实业务系统。
 
 ## 系统结构
 
@@ -209,4 +244,3 @@ npm run build
 - `docs/mcp-capability-design.md`：MCP 能力与工具设计。
 - `docs/knowledge-search-retrieval-design.md`：知识检索流程与技术原理。
 - `docs/technical-implementation-overview.md`：当前实现细节总览。
-
