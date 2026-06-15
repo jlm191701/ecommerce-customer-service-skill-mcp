@@ -7,7 +7,7 @@ import json
 import math
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
@@ -52,6 +52,7 @@ class TypedKnowledgeQuery:
     intent: str
     categories: tuple[str, ...]
     priority: int = 3
+    planner: str = "rule"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -59,7 +60,21 @@ class TypedKnowledgeQuery:
             "intent": self.intent,
             "categories": list(self.categories),
             "priority": self.priority,
+            "planner": self.planner,
         }
+
+
+@dataclass(frozen=True)
+class QueryPlanDraft:
+    queries: list[TypedKnowledgeQuery]
+    confidence: float
+    source: str
+    reason: str
+
+
+class QueryPlannerClient(Protocol):
+    def complete(self, prompt: str, context: dict[str, Any]) -> str:
+        ...
 
 
 class LocalKnowledgeSearch:
@@ -144,11 +159,20 @@ class LocalKnowledgeSearch:
         "5g": ("5g", "5ghz", "wifi", "网络", "配网"),
     }
 
-    def __init__(self, knowledge_path: Path, limit: int = 3) -> None:
+    LLM_PLANNER_CONFIDENCE_THRESHOLD = 0.72
+
+    def __init__(
+        self,
+        knowledge_path: Path,
+        limit: int = 3,
+        query_planner: QueryPlannerClient | None = None,
+    ) -> None:
         self._knowledge_path = knowledge_path
         self._index_path = knowledge_path / ".index" / "knowledge_index.json"
         self._limit = limit
         self._index: dict[str, Any] | None = None
+        self._query_planner = query_planner
+        self._query_plan_cache: dict[str, QueryPlanDraft] = {}
 
     def search(self, query: str, limit: int | None = None) -> dict[str, Any]:
         query = query.strip()
@@ -156,7 +180,8 @@ class LocalKnowledgeSearch:
         if not query:
             return self._failed(query, "missing_query", "缺少检索问题，无法查询知识库。")
 
-        query_plan = self._build_query_plan(query)
+        query_plan_draft = self._build_query_plan(query, index)
+        query_plan = query_plan_draft.queries
         if not query_plan:
             return self._failed(query, "missing_query", "缺少有效检索词，无法查询知识库。")
 
@@ -230,6 +255,11 @@ class LocalKnowledgeSearch:
                     "cards": len(index["cards"]),
                     "records": len(index["records"]),
                     "method": "openviking_lite_query_plan_hierarchical_rerank",
+                    "planner": {
+                        "source": query_plan_draft.source,
+                        "confidence": query_plan_draft.confidence,
+                        "reason": query_plan_draft.reason,
+                    },
                     "routes": route_debug,
                 },
             },
@@ -460,10 +490,10 @@ class LocalKnowledgeSearch:
             )
         return cards
 
-    def _build_query_plan(self, query: str) -> list[TypedKnowledgeQuery]:
+    def _build_query_plan(self, query: str, index: dict[str, Any]) -> QueryPlanDraft:
         base_tokens = self._tokens(query)
         if not base_tokens:
-            return []
+            return QueryPlanDraft([], 0.0, "rule", "empty_query_tokens")
 
         categories = self._infer_categories(query)
         intent = self._infer_intent(query, categories)
@@ -508,7 +538,180 @@ class LocalKnowledgeSearch:
                     priority=3,
                 )
             )
-        return self._dedupe_queries(queries)
+        rule_plan = QueryPlanDraft(
+            queries=self._dedupe_queries(queries),
+            confidence=self._rule_query_confidence(query, categories, intent, expanded_terms),
+            source="rule",
+            reason="rule_confident",
+        )
+        if (
+            self._query_planner is None
+            or rule_plan.confidence >= self.LLM_PLANNER_CONFIDENCE_THRESHOLD
+        ):
+            return rule_plan
+
+        llm_plan = self._build_llm_query_plan(query, index)
+        if llm_plan.queries:
+            return llm_plan
+
+        return QueryPlanDraft(
+            queries=rule_plan.queries,
+            confidence=rule_plan.confidence,
+            source="rule_fallback",
+            reason=llm_plan.reason or "llm_planner_unavailable",
+        )
+
+    def _build_llm_query_plan(self, query: str, index: dict[str, Any]) -> QueryPlanDraft:
+        available_categories = self._available_categories(index)
+        cache_key = self._llm_query_plan_cache_key(query, available_categories)
+        cached = self._query_plan_cache.get(cache_key)
+        if cached:
+            return cached
+
+        prompt = (
+            "Build a structured knowledge-base retrieval plan for the user query. "
+            "Return JSON only, with shape: "
+            '{"queries":[{"query":"...","intent":"...","categories":["..."],"priority":5}]}. '
+            "Use only categories from available_categories. Keep at most 5 queries."
+        )
+        context = {
+            "user_query": query,
+            "available_categories": available_categories,
+            "allowed_intents": [
+                "general_resource",
+                "product_question",
+                "product_comparison",
+                "after_sales_policy",
+                "logistics_policy",
+                "price_protection",
+                "policy_resource",
+                "promotion_resource",
+                "setup_help",
+            ],
+        }
+        try:
+            raw = self._query_planner.complete(prompt, context) if self._query_planner else ""
+        except Exception as exc:
+            return QueryPlanDraft([], 0.0, "llm", f"llm_error:{type(exc).__name__}")
+
+        queries = self._parse_llm_query_plan(raw, available_categories)
+        draft = QueryPlanDraft(
+            queries=queries,
+            confidence=0.8 if queries else 0.0,
+            source="llm",
+            reason="llm_structured_plan" if queries else "llm_invalid_plan",
+        )
+        if queries:
+            self._query_plan_cache[cache_key] = draft
+        return draft
+
+    @staticmethod
+    def _available_categories(index: dict[str, Any]) -> list[str]:
+        categories = {
+            str(card.get("category") or "").strip()
+            for card in index.get("cards", {}).values()
+            if str(card.get("category") or "").strip()
+        }
+        return sorted(categories)
+
+    @staticmethod
+    def _llm_query_plan_cache_key(query: str, available_categories: list[str]) -> str:
+        return json.dumps(
+            {
+                "version": 1,
+                "query": " ".join(query.lower().split()),
+                "categories": available_categories,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+    def _parse_llm_query_plan(
+        self,
+        raw: str,
+        available_categories: list[str],
+    ) -> list[TypedKnowledgeQuery]:
+        try:
+            payload = json.loads(self._extract_json_object(raw))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+        items = payload.get("queries") if isinstance(payload, dict) else None
+        if not isinstance(items, list):
+            return []
+
+        allowed_categories = set(available_categories)
+        parsed: list[TypedKnowledgeQuery] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            query = str(item.get("query") or "").strip()
+            intent = str(item.get("intent") or "general_resource").strip() or "general_resource"
+            if not query or not self._tokens(query):
+                continue
+            raw_categories = item.get("categories")
+            categories = (
+                [
+                    str(category).strip()
+                    for category in raw_categories
+                    if str(category).strip() in allowed_categories
+                ]
+                if isinstance(raw_categories, list)
+                else []
+            )
+            try:
+                priority = int(item.get("priority", 3))
+            except (TypeError, ValueError):
+                priority = 3
+            parsed.append(
+                TypedKnowledgeQuery(
+                    query=query[:240],
+                    intent=intent[:80],
+                    categories=tuple(dict.fromkeys(categories[:4])),
+                    priority=max(1, min(priority, 5)),
+                    planner="llm",
+                )
+            )
+        return self._dedupe_queries(parsed)
+
+    @staticmethod
+    def _extract_json_object(raw: str) -> str:
+        text = raw.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+            text = re.sub(r"\s*```$", "", text)
+        start = text.find("{")
+        end = text.rfind("}")
+        if start == -1 or end == -1 or end <= start:
+            raise ValueError("missing json object")
+        return text[start : end + 1]
+
+    def _rule_query_confidence(
+        self,
+        query: str,
+        categories: list[str],
+        intent: str,
+        expanded_terms: str,
+    ) -> float:
+        normalized = query.lower()
+        score = 0.22
+        if categories:
+            score += min(len(categories), 3) * 0.15
+        if intent != "general_resource":
+            score += 0.2
+        if expanded_terms != query:
+            score += 0.12
+        if any(
+            any(alias.lower() in normalized for alias in aliases)
+            for aliases in self.PRODUCT_ALIASES.values()
+        ):
+            score += 0.22
+        if re.search(r"\b\d{8,32}\b", query):
+            score += 0.18
+        if len(self._tokens(query)) <= 2 and not categories:
+            score -= 0.12
+        if len(categories) >= 3 and intent.endswith("_resource"):
+            score -= 0.08
+        return max(0.0, min(score, 1.0))
 
     def _infer_categories(self, query: str) -> list[str]:
         normalized = query.lower()

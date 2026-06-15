@@ -440,7 +440,7 @@ backend/knowledge/.index/knowledge_index.json
 | OpenViking | 当前项目实现 | 说明 |
 | --- | --- | --- |
 | `ContextType.RESOURCE` | `knowledge.search` | 静态产品、政策、FAQ 属于资源检索 |
-| `TypedQuery` / `QueryPlan` | `TypedKnowledgeQuery` | 当前用规则生成，后续可换 LLM query planner |
+| `TypedQuery` / `QueryPlan` | `TypedKnowledgeQuery` | 规则快速路径 + 低置信度 LLM planner + 本地规则兜底 |
 | L0/L1/L2 层级上下文 | 分类 / 卡片 / 正文片段 | 保留层级递进检索思想 |
 | global search + recursive search | 分类导航 + 卡片概览 + 片段检索 | 本地倒排索引版本 |
 | rerank | deterministic rerank | 不接外部 reranker，先用可测试规则 |

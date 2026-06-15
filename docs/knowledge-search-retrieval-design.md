@@ -217,7 +217,7 @@ hotness = sigmoid(log1p(active_count)) * time_decay(last_accessed_at)
 | OpenViking | 当前实现 | 差异 |
 | --- | --- | --- |
 | `ContextType.RESOURCE` | `knowledge.search` | 产品/政策知识作为静态资源 |
-| `TypedQuery` / `QueryPlan` | `TypedKnowledgeQuery` | 当前用规则生成，暂未用 LLM planner |
+| `TypedQuery` / `QueryPlan` | `TypedKnowledgeQuery` | 规则快速路径 + 低置信度 LLM planner + 本地规则兜底 |
 | 层级检索 | L0/L1/L2 本地索引 | 不接 VikingFS |
 | dense/sparse vector | 本地倒排索引 + IDF | 暂不使用 embedding |
 | rerank client | 规则型 rerank | 暂不接外部 reranker |

@@ -6,6 +6,18 @@ from app.infrastructure.knowledge.local_search import LocalKnowledgeSearch
 from app.infrastructure.mcp.mock_gateway import MockMCPGateway
 
 
+class FakeQueryPlanner:
+    def __init__(self, response: str | Exception) -> None:
+        self.response = response
+        self.calls: list[dict] = []
+
+    def complete(self, prompt: str, context: dict) -> str:
+        self.calls.append({"prompt": prompt, "context": context})
+        if isinstance(self.response, Exception):
+            raise self.response
+        return self.response
+
+
 def test_local_knowledge_search_finds_markdown_card(tmp_path: Path) -> None:
     card = tmp_path / "after_sales" / "returns.md"
     card.parent.mkdir()
@@ -183,3 +195,98 @@ keywords:
     assert result["data"]["results"][0]["title"] == "配送与运费规则"
     assert result["data"]["results"][0]["source"] == "logistics/delivery.md"
     assert result["data"]["results"][0]["source"] != "mock_knowledge_base"
+
+
+def test_local_knowledge_search_uses_llm_planner_for_low_confidence_query(tmp_path: Path) -> None:
+    card = tmp_path / "setup" / "matter.md"
+    card.parent.mkdir()
+    card.write_text(
+        """---
+title: Matter setup guide
+category: setup
+keywords:
+  - matter setup
+  - onboarding
+---
+
+Use the HomeHub app onboarding flow to connect Matter devices.
+""",
+        encoding="utf-8",
+    )
+    planner = FakeQueryPlanner(
+        json.dumps(
+            {
+                "queries": [
+                    {
+                        "query": "matter setup onboarding",
+                        "intent": "setup_help",
+                        "categories": ["setup", "unknown"],
+                        "priority": 5,
+                    }
+                ]
+            }
+        )
+    )
+
+    result = LocalKnowledgeSearch(tmp_path, query_planner=planner).search("need pairing help")
+
+    assert result["status"] == "success"
+    assert len(planner.calls) == 1
+    assert planner.calls[0]["context"]["available_categories"] == ["setup"]
+    assert result["data"]["results"][0]["title"] == "Matter setup guide"
+    assert result["data"]["query_plan"][0]["planner"] == "llm"
+    assert result["data"]["query_plan"][0]["categories"] == ["setup"]
+    assert result["data"]["index"]["planner"]["source"] == "llm"
+
+
+def test_local_knowledge_search_skips_llm_planner_for_high_confidence_rule_query(
+    tmp_path: Path,
+) -> None:
+    card = tmp_path / "product" / "phone.md"
+    card.parent.mkdir()
+    card.write_text(
+        """---
+title: Aurora Phone X1 specs
+category: product
+keywords:
+  - Aurora Phone X1
+  - fast charge
+---
+
+Aurora Phone X1 supports 80W wired fast charging.
+""",
+        encoding="utf-8",
+    )
+    planner = FakeQueryPlanner(json.dumps({"queries": []}))
+
+    result = LocalKnowledgeSearch(tmp_path, query_planner=planner).search("Aurora Phone X1 fast charge")
+
+    assert result["status"] == "success"
+    assert planner.calls == []
+    assert result["data"]["query_plan"][0]["planner"] == "rule"
+    assert result["data"]["index"]["planner"]["source"] == "rule"
+
+
+def test_local_knowledge_search_falls_back_when_llm_planner_fails(tmp_path: Path) -> None:
+    card = tmp_path / "general" / "hours.md"
+    card.parent.mkdir()
+    card.write_text(
+        """---
+title: Service hours
+category: general
+keywords:
+  - service hours
+---
+
+Online support is available every day.
+""",
+        encoding="utf-8",
+    )
+    planner = FakeQueryPlanner(RuntimeError("planner unavailable"))
+
+    result = LocalKnowledgeSearch(tmp_path, query_planner=planner).search("service hours")
+
+    assert result["status"] == "success"
+    assert len(planner.calls) == 1
+    assert result["data"]["query_plan"][0]["planner"] == "rule"
+    assert result["data"]["index"]["planner"]["source"] == "rule_fallback"

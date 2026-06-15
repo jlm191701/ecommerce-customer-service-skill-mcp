@@ -7,6 +7,7 @@ from app.agent.runtime import AgentRuntime
 from app.core.config import settings
 from app.infrastructure.llm.deepseek_client import DeepSeekLLMClient
 from app.infrastructure.llm.echo_client import EchoLLMClient
+from app.infrastructure.llm.query_planner import DeepSeekQueryPlannerClient
 from app.infrastructure.knowledge.local_search import LocalKnowledgeSearch
 from app.infrastructure.memory.event_entity_store import EventEntityMemoryStore
 from app.infrastructure.mcp.mock_gateway import MockMCPGateway
@@ -32,8 +33,18 @@ def get_agent_runtime() -> AgentRuntime:
         if settings.deepseek_api_key
         else EchoLLMClient()
     )
+    query_planner = (
+        DeepSeekQueryPlannerClient(
+            api_key=settings.deepseek_api_key.get_secret_value(),
+            base_url=settings.deepseek_base_url,
+            model=settings.deepseek_model,
+            timeout_seconds=min(settings.llm_timeout_seconds, 10.0),
+        )
+        if settings.deepseek_api_key
+        else None
+    )
     knowledge_path = (Path(__file__).resolve().parents[2] / settings.knowledge_path).resolve()
-    knowledge_search = LocalKnowledgeSearch(knowledge_path)
+    knowledge_search = LocalKnowledgeSearch(knowledge_path, query_planner=query_planner)
     vision_analyzer = (
         QwenVisionClient(
             api_key=settings.qwen_vl_api_key.get_secret_value(),
